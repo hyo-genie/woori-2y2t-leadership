@@ -1,0 +1,99 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 로그인한 사람의 키(이름을 16진수로 바꾼 값)는 인증 이메일의 @ 앞부분과 같아요.
+    function signedIn() { return request.auth != null && request.auth.token.email is string; }
+    function myKey() { return request.auth.token.email.split('@')[0]; }
+    function isMe(key) { return signedIn() && myKey() == key; }
+    function str(v, max) { return v is string && v.size() <= max; }
+    function mine() { return signedIn() && resource.data.authorKey == myKey(); }
+
+    // 가입 여부 확인용 (이름·가입일만). 로그인 전에도 읽을 수 있어야 해서 get만 공개.
+    match /accounts/{key} {
+      allow get: if true;
+      allow list: if false;
+      allow create: if isMe(key)
+        && request.resource.data.keys().hasOnly(['name', 'createdAt'])
+        && str(request.resource.data.name, 20);
+      allow update, delete: if false;
+    }
+
+    // 프로필: 로그인한 사람은 모두 읽고, 본인만 고쳐요.
+    match /profiles/{key} {
+      allow read: if signedIn();
+      allow create, update: if isMe(key)
+        && request.resource.data.keys().hasOnly(['name', 'gender', 'status', 'bgm', 'mood', 'intro', 'photo', 'createdAt', 'updatedAt'])
+        && str(request.resource.data.status, 60)
+        && str(request.resource.data.bgm, 60)
+        && str(request.resource.data.intro, 300)
+        && str(request.resource.data.photo, 200000);
+      allow delete: if false;
+    }
+
+    // 미니룸: 본인만 꾸며요.
+    match /rooms/{key} {
+      allow read: if signedIn();
+      allow create, update: if isMe(key)
+        && request.resource.data.items is list
+        && request.resource.data.items.size() <= 40;
+      allow delete: if false;
+    }
+
+    // 방문자 수
+    match /visits/{key} {
+      allow read, write: if signedIn();
+    }
+
+    // 방명록(공개): 로그인한 누구나 쓰고, 글쓴이나 홈피 주인이 지워요.
+    match /guestbook/{owner}/entries/{id} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.authorKey == myKey()
+        && request.resource.data.secret == false
+        && str(request.resource.data.text, 500);
+      allow delete: if isMe(owner) || mine();
+      allow update: if false;
+    }
+
+    // 방명록(비밀글): 홈피 주인과 글쓴이만 읽어요.
+    match /guestbook/{owner}/secret/{id} {
+      allow read: if isMe(owner) || mine();
+      allow create: if signedIn()
+        && request.resource.data.authorKey == myKey()
+        && request.resource.data.secret == true
+        && str(request.resource.data.text, 500);
+      allow delete: if isMe(owner) || mine();
+      allow update: if false;
+    }
+
+    // 일기: 본인만 쓰고 고치고 지워요.
+    match /diary/{owner}/posts/{id} {
+      allow read: if signedIn();
+      allow create, update: if isMe(owner)
+        && str(request.resource.data.title, 60)
+        && str(request.resource.data.text, 3000);
+      allow delete: if isMe(owner);
+    }
+
+    // 일기 댓글: 로그인한 누구나 달고, 글쓴이나 일기 주인이 지워요.
+    match /diary/{owner}/comments/{id} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.authorKey == myKey()
+        && str(request.resource.data.text, 300);
+      allow delete: if isMe(owner) || mine();
+      allow update: if false;
+    }
+
+    // 일기 공감: 문서 id가 "글id_내키" 이어야 해서 1인 1공감이에요.
+    match /diary/{owner}/likes/{id} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.authorKey == myKey()
+        && id == request.resource.data.post + '_' + myKey();
+      allow delete: if isMe(owner) || mine();
+      allow update: if false;
+    }
+  }
+}
